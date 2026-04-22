@@ -9,6 +9,7 @@ Writes under MEDIA_ROOT/script-reports/. Not a planning or load calculator.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,8 @@ STATUS_PARTIAL = "PARTIAL"
 STATUS_NOT_CONNECTED = "NOT CONNECTED"
 STATUS_NO_POWER_PORTS = "NO POWER PORTS"
 STATUS_UNKNOWN = "UNKNOWN"
+# Passive rack gear — no PDU supply-power audit (exact NetBox DeviceRole.name)
+STATUS_PASSIVE = "PASSIVE"
 
 # CSV / logical connection_target_type values
 TARGET_ASSOCIATED = "associated_rack_pdu"
@@ -44,12 +47,54 @@ TARGET_UPSTREAM_POWERFEED = "upstream_powerfeed"
 # True: red PDU card before blue. False: blue before red.
 PDU_SUMMARY_RED_BEFORE_BLUE = True
 
+PASSIVE_DEVICE_ROLE_NAMES = frozenset(
+    (
+        "Copper Patching",
+        "Fiber Tray",
+    )
+)
+
 
 def _resolve_rack(rack: Rack | int) -> Rack:
     """ObjectVar may pass a model instance (UI) or pk (API); normalize to Rack."""
     if isinstance(rack, Rack):
         return rack
     return Rack.objects.get(pk=rack)
+
+
+def is_passive_power_role(device: Device) -> bool:
+    """True when DeviceRole.name matches a passive role (exact string; NetBox spelling)."""
+    if not getattr(device, "role_id", None):
+        return False
+    role = getattr(device, "role", None)
+    name = (role.name if role else "") or ""
+    return name in PASSIVE_DEVICE_ROLE_NAMES
+
+
+def build_device_detail_url(device_pk: int, script_request) -> str:
+    """Absolute URL to the NetBox DCIM device page when request/site context is available."""
+    path = f"/dcim/devices/{device_pk}/"
+    try:
+        from django.urls import reverse
+
+        path = reverse("dcim:device", kwargs={"pk": device_pk})
+    except Exception:
+        pass
+    if script_request is not None and hasattr(script_request, "build_absolute_uri"):
+        try:
+            return script_request.build_absolute_uri(path)
+        except Exception:
+            pass
+    try:
+        from django.contrib.sites.models import Site
+
+        domain = Site.objects.get_current().domain
+        if domain:
+            p = path if path.startswith("/") else "/" + path
+            return f"https://{domain.rstrip('/')}{p}"
+    except Exception:
+        pass
+    return path if path.startswith("/") else "/" + path.lstrip("/")
 
 
 def sanitize_filename_component(name: str, *, max_len: int = 120) -> str:
@@ -492,6 +537,7 @@ class DeviceAuditRow:
     connection_target_type: str
     status: str
     reason: str
+    device_url: str = ""
 
 
 def _fmt_position(device: Device) -> str:
@@ -732,6 +778,25 @@ def evaluate_device_connectivity(
     connected_power_port_count = sum(
         1 for p in ports if getattr(p, "_occupied", False)
     )
+
+    if is_passive_power_role(device):
+        return DeviceAuditRow(
+            rack_name=rack_name,
+            site_name=site_name,
+            device_name=device.name,
+            device_role=device.role.name if device.role_id else "",
+            device_type=device.device_type.model if device.device_type_id else "",
+            rack_position=_fmt_position(device),
+            face=_fmt_face(device),
+            power_port_count=power_port_count,
+            connected_power_port_count=connected_power_port_count,
+            connected_pdu_names="",
+            connection_target_type=TARGET_NONE,
+            status=STATUS_PASSIVE,
+            reason=(
+                "Excluded from PDU outlet audit (passive DeviceRole; no supply power expected)."
+            ),
+        )
 
     if device.pk in associated_pdu_ids:
         return evaluate_associated_pdu_as_rack_device(device, strict_mode=strict_mode)
@@ -995,6 +1060,7 @@ def write_device_csv(rows: list[DeviceAuditRow], dest: Path) -> None:
         "connection_target_type",
         "status",
         "reason",
+        "device_url",
     ]
     dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("w", newline="", encoding="utf-8") as fh:
@@ -1016,6 +1082,7 @@ def write_device_csv(rows: list[DeviceAuditRow], dest: Path) -> None:
                     "connection_target_type": r.connection_target_type,
                     "status": r.status,
                     "reason": r.reason,
+                    "device_url": r.device_url,
                 }
             )
 
@@ -1087,7 +1154,13 @@ def build_html_report(
     roles_esc = escape(power_role_names)
     total_devices = len(device_rows)
     total_pdus = len(pdu_summary_rows)
-    flagged = [r for r in device_rows if r.status != STATUS_CONNECTED]
+    passive_rows = [r for r in device_rows if r.status == STATUS_PASSIVE]
+    n_passive = len(passive_rows)
+    flagged = [
+        r
+        for r in device_rows
+        if r.status not in (STATUS_CONNECTED, STATUS_PASSIVE)
+    ]
     n_flagged = len(flagged)
 
     # PDU cards HTML
@@ -1211,10 +1284,20 @@ def build_html_report(
             "</tr></thead><tbody>",
         ]
         for r in rows:
-            st_class = "st-ok" if r.status == STATUS_CONNECTED else "st-warn"
+            if r.status == STATUS_CONNECTED:
+                st_class = "st-ok"
+            elif r.status == STATUS_PASSIVE:
+                st_class = "st-passive"
+            else:
+                st_class = "st-warn"
+            name_cell = escape(r.device_name)
+            if getattr(r, "device_url", ""):
+                name_cell = (
+                    f'<a class="device-link" href="{escape(r.device_url)}">{escape(r.device_name)}</a>'
+                )
             out.append(
                 "<tr>"
-                f"<td>{escape(r.device_name)}</td>"
+                f"<td>{name_cell}</td>"
                 f"<td>{escape(r.device_role)}</td>"
                 f"<td>{escape(r.device_type)}</td>"
                 f"<td>{escape(r.rack_position)}</td>"
@@ -1231,6 +1314,18 @@ def build_html_report(
             out.append('<tr><td colspan="11" class="empty">No rows.</td></tr>')
         out.append("</tbody></table>")
         return "\n".join(out)
+
+    passive_section = ""
+    if passive_rows:
+        passive_section = (
+            '<section aria-labelledby="sec-passive">'
+            '<h2 id="sec-passive">Passive devices (excluded from PDU audit)</h2>'
+            "<p class=\"hint\">Exact <strong>DeviceRole</strong> name match: "
+            "<strong>Copper Patching</strong>, <strong>Fiber Tray</strong>. "
+            "Not evaluated for PDU outlet connectivity.</p>"
+            + device_table(passive_rows, "audit-passive")
+            + "</section>"
+        )
 
     pdu_section = '\n<div class="pdu-grid">\n' + "\n".join(pdu_blocks) + "\n</div>\n"
 
@@ -1467,7 +1562,18 @@ def build_html_report(
       letter-spacing: 0.04em;
     }}
     .st-ok {{ color: #52be80; font-weight: 600; }}
+    .st-passive {{ color: #7fb3d3; font-weight: 600; }}
     .st-warn {{ color: #f5b041; font-weight: 600; }}
+    a.device-link {{
+      color: var(--text);
+      font-weight: 600;
+      text-decoration: none;
+      border-bottom: 1px solid rgba(139,156,179,0.45);
+    }}
+    a.device-link:hover {{
+      color: #aed6f1;
+      border-bottom-color: rgba(174,214,241,0.65);
+    }}
     .empty {{ color: var(--muted); padding: 1rem 0; }}
     footer {{
       margin-top: 2rem;
@@ -1496,6 +1602,7 @@ def build_html_report(
         <div><label>Rack devices</label><b>{total_devices}</b></div>
         <div><label>Associated PDUs</label><b>{total_pdus}</b></div>
         <div><label>Flagged devices</label><b>{n_flagged}</b></div>
+        <div><label>Passive (excluded)</label><b>{n_passive}</b></div>
       </div>
     </header>
 
@@ -1515,10 +1622,11 @@ def build_html_report(
       <strong>Rack PDU devices</strong> (same associated set): intake <strong>PowerPort</strong> → <strong>PowerFeed</strong> is expected; we then require modeled <strong>PowerFeed.available_power</strong>. PDUs without usable upstream capacity stay flagged.</p>
       {device_table(device_rows, "audit-all")}
     </section>
+    {passive_section}
 
     <section aria-labelledby="sec-flag">
       <h2 id="sec-flag">Flagged devices</h2>
-      <p class="hint">Statuses other than CONNECTED require review.</p>
+      <p class="hint">Statuses other than CONNECTED or PASSIVE require review. Passive roles (Copper Patching, Fiber Tray) are listed above and omitted here.</p>
       {device_table(flagged, "audit-flagged")}
     </section>
 
@@ -1605,18 +1713,23 @@ class RackPduConnectivityAudit(Script):
                 }
             )
 
-        devices = get_rack_devices(rack)
-        device_rows: list[DeviceAuditRow] = []
-        for dev in devices:
-            device_rows.append(
-                evaluate_device_connectivity(
-                    dev,
-                    associated_pdu_ids,
-                    strict_mode=strict_mode,
-                )
+        devices = list(get_rack_devices(rack))
+        device_rows = [
+            evaluate_device_connectivity(
+                dev,
+                associated_pdu_ids,
+                strict_mode=strict_mode,
             )
-
+            for dev in devices
+        ]
         req = getattr(self, "request", None)
+        device_rows = [
+            dataclasses.replace(
+                row,
+                device_url=build_device_detail_url(dev.pk, req),
+            )
+            for row, dev in zip(device_rows, devices)
+        ]
 
         html_doc = build_html_report(
             rack,
@@ -1652,5 +1765,6 @@ class RackPduConnectivityAudit(Script):
 
         self.log_info(
             f"**Associated PDUs:** {len(pdus)} · **Rack devices:** {len(device_rows)} · "
-            f"**Flagged:** {sum(1 for r in device_rows if r.status != STATUS_CONNECTED)}"
+            f"**Passive (excluded):** {sum(1 for r in device_rows if r.status == STATUS_PASSIVE)} · "
+            f"**Flagged:** {sum(1 for r in device_rows if r.status not in (STATUS_CONNECTED, STATUS_PASSIVE))}"
         )
