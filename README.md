@@ -7,6 +7,7 @@ NetBox **custom scripts** maintained in Git. One repository can hold **many** un
 | File | Primary class | Purpose |
 |------|-----------------|--------|
 | [`rack_capacity_report.py`](rack_capacity_report.py) | `RackCapacityReport` | Read-only rack capacity HTML report (utilization, free RU, mount spots, front/rear elevations). Writes under `media/script-reports/`. |
+| [`rack_pdu_connectivity_audit.py`](rack_pdu_connectivity_audit.py) | `RackPduConnectivityAudit` | Read-only rack PDU audit: associated PDUs (site/location/role rules), outlet utilization, device power traces to PDU outlets. HTML + CSV under `media/script-reports/`. |
 
 Add new rows here whenever you commit another script.
 
