@@ -8,6 +8,7 @@ NetBox **custom scripts** maintained in Git. One repository can hold **many** un
 |------|-----------------|--------|
 | [`rack_capacity_report.py`](rack_capacity_report.py) | `RackCapacityReport` | Read-only rack capacity HTML report (utilization, free RU, mount spots, front/rear elevations). Writes under `media/script-reports/`. |
 | [`rack_pdu_connectivity_audit.py`](rack_pdu_connectivity_audit.py) | `RackPduConnectivityAudit` | Read-only rack PDU audit: associated PDUs (site/location/role rules), outlet utilization, device power traces to PDU outlets. HTML + CSV under `media/script-reports/`. |
+| [`device_rack_power_modeling.py`](device_rack_power_modeling.py) | `DeviceRackPowerModeling` | Writable helper: cascade to a rack device, ensure modeled PowerPorts/outlets, cable spare ports to rack PDUs (optional RED/BLUE parity), tag cables for audit. |
 
 Add new rows here whenever you commit another script.
 
@@ -25,9 +26,14 @@ Add new rows here whenever you commit another script.
 3. **`git add`**, **`git commit`**, **`git push`** this repo.
 4. In NetBox (**Customization → Scripts**), add or refresh the script module pointing at **that filename** (upload or Data Source sync).
 
-## Existing script
+## Existing scripts
 
 ### `rack_capacity_report.py`
 
 - **Install:** Deploy the file via your NetBox scripts workflow (filesystem, upload, or Git Data Source).
 - **Requires:** Standard NetBox custom script environment (`extras.scripts`, models you import).
+
+### `device_rack_power_modeling.py`
+
+- **Install:** Same as above (repo root `.py`, NetBox Data Source path `netbox-capacity-scripts/device_rack_power_modeling.py`).
+- **Requires:** NetBox DCIM cabling APIs; tune **POWER_DEVICE_ROLE_NAMES**, **PDU_RED_BLUE_***, and fallbacks at the top of the module for your tenant.
