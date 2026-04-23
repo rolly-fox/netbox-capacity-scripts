@@ -1,6 +1,10 @@
 # netbox-capacity-scripts
 
-NetBox **custom scripts** maintained in Git. One repository can hold **many** unrelated scripts—each NetBox script module normally maps to **one `.py` file** here.
+NetBox **custom scripts** for rack visibility and power modeling. This repository contains **three** modules (one `.py` file per NetBox script at the repo root):
+
+1. **Rack capacity report** — utilization, free RU, elevations (read-only HTML under `media/script-reports/`).
+2. **Rack PDU connectivity audit** — PDUs, outlets, power traces (read-only HTML + CSV).
+3. **Device rack power modeling** — ensure PowerPorts/outlets, cable to rack PDUs, optional RED/BLUE parity, audit tags.
 
 ## Scripts (inventory)
 
@@ -33,7 +37,12 @@ Add new rows here whenever you commit another script.
 - **Install:** Deploy the file via your NetBox scripts workflow (filesystem, upload, or Git Data Source).
 - **Requires:** Standard NetBox custom script environment (`extras.scripts`, models you import).
 
+### `rack_pdu_connectivity_audit.py`
+
+- **Install:** Same as above (repo root `.py`; Data Source path `netbox-capacity-scripts/rack_pdu_connectivity_audit.py`).
+- **Requires:** Read-only DCIM queries; outputs land under `media/script-reports/`. Adjust role/site filters at the top of the module if your PDU naming differs.
+
 ### `device_rack_power_modeling.py`
 
-- **Install:** Same as above (repo root `.py`, NetBox Data Source path `netbox-capacity-scripts/device_rack_power_modeling.py`).
-- **Requires:** NetBox DCIM cabling APIs; tune **POWER_DEVICE_ROLE_NAMES**, **PDU_RED_BLUE_***, and fallbacks at the top of the module for your tenant.
+- **Install:** Same as above (repo root `.py`; Data Source path `netbox-capacity-scripts/device_rack_power_modeling.py`).
+- **Requires:** NetBox DCIM cabling APIs (creates/updates objects when **Commit** is enabled). Tune **`POWER_DEVICE_ROLE_NAMES`**, RED/BLUE parity (**`PDU_RED_BLUE_PARITY_CABLING`**, name tokens), and other fallbacks at the top of the module for your tenant.
